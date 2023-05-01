@@ -24,6 +24,8 @@ import { $, chalk, fetch, ProcessOutput } from './index.js'
 import { startRepl } from './repl.js'
 import { randomId } from './util.js'
 import { installDeps, parseDeps } from './deps.js'
+// @ts-ignore
+import * as Imba from 'imba/compiler'
 
 function printUsage() {
   // language=txt
@@ -167,7 +169,7 @@ async function importPath(filepath: string, origin = filepath) {
   }
   if (ext === '.md') {
     return writeAndImport(
-      transformMarkdown(await fs.readFile(filepath)),
+      await transformMarkdown(await fs.readFile(filepath), filepath),
       join(dirname(filepath), basename(filepath) + '.mjs'),
       origin
     )
@@ -183,21 +185,29 @@ async function importPath(filepath: string, origin = filepath) {
   await import(url.pathToFileURL(filepath).toString())
 }
 
-function transformMarkdown(buf: Buffer) {
+async function transformMarkdown(buf: Buffer, filepath: string) {
   const source = buf.toString()
   const output = []
   let state = 'root'
   let codeBlockEnd = ''
   let prevLineIsEmpty = true
   const jsCodeBlock = /^(```+|~~~+)(js|javascript)$/
+  const imbaCodeBlock = /^(```+|~~~+)(imba)$/
+
   const shCodeBlock = /^(```+|~~~+)(sh|bash)$/
   const otherCodeBlock = /^(```+|~~~+)(.*)$/
+
+  let uncompiledImbaCode = []
   for (let line of source.split('\n')) {
     switch (state) {
       case 'root':
         if (/^( {4}|\t)/.test(line) && prevLineIsEmpty) {
           output.push(line)
           state = 'tab'
+        } else if(imbaCodeBlock.test(line)){
+          output.push('')
+          state = 'imba'
+          codeBlockEnd = line.match(imbaCodeBlock)![1]
         } else if (jsCodeBlock.test(line)) {
           output.push('')
           state = 'js'
@@ -223,6 +233,18 @@ function transformMarkdown(buf: Buffer) {
         } else {
           output.push('// ' + line)
           state = 'root'
+        }
+        break
+      case 'imba':
+        if (line === codeBlockEnd) {
+          // compile to js
+          const compiledCode = await Imba.compile(uncompiledImbaCode.join('\n'), {sourcePath: filepath})
+          output.push(...compiledCode.js.split('\n'))
+          output.push('')
+          uncompiledImbaCode = []
+          state = 'root'
+        } else {
+          uncompiledImbaCode.push(line)
         }
         break
       case 'js':
